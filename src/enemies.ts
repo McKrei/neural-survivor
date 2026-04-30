@@ -1,6 +1,8 @@
 // Enemy spawning and AI.
 
 import {
+  adaptiveHpBoost,
+  adaptiveSpawnBoost,
   BOSS_INTERVAL,
   DESPAWN_RADIUS,
   enemyDamageMul,
@@ -16,7 +18,7 @@ import {
 } from "./balance";
 import { T } from "./texts";
 import type { Enemy, EnemyKind, GameState, Projectile } from "./types";
-import { dist, rngPickWeighted, rngRange, TAU } from "./utils";
+import { dist, rngPickWeighted, rngRange, SpatialHash, TAU } from "./utils";
 
 const nextId = (state: GameState): number => {
   state.nextId++;
@@ -28,7 +30,13 @@ const makeEnemy = (state: GameState, kind: EnemyKind, x: number, y: number): Ene
   const hpScale = enemyHpMul(state.time);
   const dmgScale = enemyDamageMul(state.time);
   const spdScale = enemySpeedMul(state.time);
-  const hp = def.hp * (def.isBoss ? hpScale * (1 + state.spawn.bossesSpawned * 0.6) : hpScale);
+  // Anti-snowball: scale enemy HP up with player DPS so over-stacked builds
+  // still face meaningful resistance.
+  const dpsBoost = adaptiveHpBoost(state.dpsRate);
+  const hp = def.hp *
+    (def.isBoss
+      ? hpScale * (1 + state.spawn.bossesSpawned * 0.6) * Math.min(2, dpsBoost)
+      : hpScale * dpsBoost);
   const speed = def.speed * (def.isBoss ? Math.min(1.3, spdScale) : spdScale);
   const damage = def.damage * (def.isBoss ? dmgScale * 1.1 : dmgScale);
 
@@ -103,8 +111,8 @@ export const spawnBoss = (state: GameState): Enemy => {
 export const updateSpawning = (state: GameState, dt: number): void => {
   state.spawn.timer += dt;
 
-  // Compute interval from spawn rate.
-  const rate = spawnRate(state.time);
+  // Compute interval from spawn rate, scaled by adaptive kill rate.
+  const rate = spawnRate(state.time) * adaptiveSpawnBoost(state.killRate);
   const targetInterval = 1 / Math.max(0.5, rate);
 
   // Smooth toward target interval to avoid jitter.
@@ -328,36 +336,54 @@ export const updateEnemies = (state: GameState, dt: number): void => {
   }
 };
 
-// Resolve circle-circle separation between two enemies (mild). Used to
-// avoid heavy stacking. Run on a sparse sampling.
+// Resolve circle-circle separation between enemies using a spatial hash so
+// each enemy is tested only against true spatial neighbours. Strong push so
+// enemies don't pile into a single dot.
+const separationGrid = new SpatialHash<{ x: number; y: number; r: number; ref: number }>(72);
+
 export const separateEnemies = (state: GameState, dt: number): void => {
   const list = state.enemies;
   const n = list.length;
   if (n < 2) return;
-  const sample = Math.min(n, 250);
-  const start = state.frame % Math.max(1, n - sample);
-  for (let i = start; i < start + sample - 1; i++) {
-    const a = list[i % n];
+
+  separationGrid.clear();
+  for (let i = 0; i < n; i++) {
+    const e = list[i];
+    if (!e.alive) continue;
+    separationGrid.insert({ x: e.x, y: e.y, r: e.r, ref: i });
+  }
+
+  for (let i = 0; i < n; i++) {
+    const a = list[i];
     if (!a.alive) continue;
-    for (let j = i + 1; j < Math.min(n, i + 5); j++) {
-      const b = list[j % n];
-      if (!b.alive || b.id === a.id) continue;
+    // Bosses don't get pushed (heavy mass).
+    const aMass = a.isBoss ? 0 : 1;
+    const queryR = a.r + 28;
+    separationGrid.query(a.x, a.y, queryR, (h) => {
+      if (h.ref <= i) return; // each pair handled once
+      const b = list[h.ref];
+      if (!b.alive) return;
+      const bMass = b.isBoss ? 0 : 1;
+      if (aMass + bMass === 0) return;
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const rs = a.r + b.r;
       const d2 = dx * dx + dy * dy;
-      if (d2 > 0 && d2 < rs * rs) {
-        const d = Math.sqrt(d2);
-        const overlap = (rs - d) * 0.5;
-        const nx = dx / (d || 1);
-        const ny = dy / (d || 1);
-        const f = overlap * 8 * dt;
-        a.x -= nx * f;
-        a.y -= ny * f;
-        b.x += nx * f;
-        b.y += ny * f;
+      if (d2 < rs * rs) {
+        const d = Math.sqrt(d2) || 0.001;
+        const overlap = rs - d;
+        const nx = dx / d;
+        const ny = dy / d;
+        // Strong, frame-rate-independent push capped per frame to avoid jitter.
+        const push = Math.min(overlap, overlap * dt * 24 + overlap * 0.5);
+        const aShare = bMass / (aMass + bMass);
+        const bShare = aMass / (aMass + bMass);
+        a.x -= nx * push * aShare;
+        a.y -= ny * push * aShare;
+        b.x += nx * push * bShare;
+        b.y += ny * push * bShare;
       }
-    }
+    });
   }
 };
 

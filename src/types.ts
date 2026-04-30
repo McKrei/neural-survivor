@@ -51,6 +51,8 @@ export type ProjectileKind =
   | "antivirus" // homing
   | "laser" // straight piercing
   | "gc" // garbage collector AoE bomb
+  | "sentinel" // orbital drone
+  | "chain" // crypto chain segment (purely visual)
   | "trojan_shot"; // enemy projectile
 
 export interface Projectile extends Entity {
@@ -73,6 +75,8 @@ export interface Projectile extends Entity {
   spin: number;
   // hostile?
   hostile: boolean;
+  // Orbital radius (for sentinel-kind projectiles only)
+  orbitR?: number;
 }
 
 export interface XPOrb extends Entity {
@@ -148,7 +152,13 @@ export type WeaponId =
   | "antivirus"
   | "gc"
   | "laser"
-  | "debugger";
+  | "debugger"
+  | "sentinel" // orbital drones around player
+  | "crypto" // chain lightning
+  // ----- Evolutions (final-form weapons unlocked by base + passive) -----
+  | "hyperthread" // thread + gpu
+  | "perimeter" // firewall + area
+  | "heuristic"; // antivirus + augment
 
 export interface Weapon {
   id: WeaponId;
@@ -261,4 +271,10 @@ export interface GameState {
   fps: number;
   fpsFrames: number;
   fpsAccum: number;
+
+  // Adaptive difficulty: smoothed kills/sec and damage/sec
+  killRate: number;
+  dpsRate: number;
+  prevKillCount: number;
+  prevTotalDamage: number;
 }

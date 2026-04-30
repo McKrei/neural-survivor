@@ -86,6 +86,44 @@ const DEBUGGER_LEVELS: WeaponLevelData[] = [
   { cooldown: 0.75, damage: 34, count: 2, pierce: 8, speed: 420, size: 13, life: 1.6 },
 ];
 
+// Sentinel: orbital drones around player.
+interface SentinelLevel {
+  cooldown: number; // refire interval
+  count: number; // number of orbiting drones
+  damage: number;
+  radius: number; // orbit radius
+  size: number; // drone visual size
+  spin: number; // angular velocity
+}
+const SENTINEL_LEVELS: SentinelLevel[] = [
+  { cooldown: 0.45, count: 2, damage: 14, radius: 78, size: 9, spin: 2.4 },
+  { cooldown: 0.42, count: 3, damage: 17, radius: 82, size: 9, spin: 2.6 },
+  { cooldown: 0.40, count: 3, damage: 21, radius: 96, size: 10, spin: 2.8 },
+  { cooldown: 0.36, count: 4, damage: 27, radius: 100, size: 11, spin: 3.4 },
+  { cooldown: 0.32, count: 5, damage: 38, radius: 110, size: 13, spin: 3.8 },
+];
+
+// Crypto: chain lightning, hits up to N targets in sequence.
+interface CryptoLevel {
+  cooldown: number;
+  damage: number;
+  chains: number; // number of targets struck
+  range: number; // initial + chain hop range
+}
+const CRYPTO_LEVELS: CryptoLevel[] = [
+  { cooldown: 1.05, damage: 22, chains: 3, range: 280 },
+  { cooldown: 1.05, damage: 26, chains: 4, range: 290 },
+  { cooldown: 0.80, damage: 26, chains: 4, range: 300 },
+  { cooldown: 0.80, damage: 34, chains: 5, range: 320 },
+  { cooldown: 0.70, damage: 48, chains: 7, range: 360 },
+];
+
+// ----- Evolutions (single-level, very strong final-form weapons) -----
+
+const HYPERTHREAD = { cooldown: 0.10, damage: 22, count: 6, pierce: 4, speed: 700, size: 8, life: 1.0 };
+const PERIMETER = { cooldown: 0.18, radius: 230, damage: 18 };
+const HEURISTIC = { cooldown: 0.40, damage: 28, count: 6, pierce: 1, speed: 480, size: 10, life: 2.6 };
+
 // ----- Targeting helpers -----
 
 const findClosestEnemy = (
@@ -372,6 +410,240 @@ const fireDebugger = (state: GameState, w: Weapon): void => {
   }
 };
 
+const fireSentinel = (state: GameState, w: Weapon): void => {
+  const lvl = SENTINEL_LEVELS[w.level - 1];
+  const damage = lvl.damage * state.player.stats.damageMul;
+  const count = lvl.count;
+  const radius = lvl.radius * state.player.stats.areaMul;
+  // Sentinel projectiles re-spawn each cycle to give continuous orbit visuals.
+  // Mark previous sentinels for fast death so we don't double-stack.
+  for (const p of state.projectiles) {
+    if (p.kind === "sentinel" && p.life > lvl.cooldown * 1.05) {
+      p.life = lvl.cooldown * 1.05;
+    }
+  }
+  for (let i = 0; i < count; i++) {
+    const a = (i / count) * TAU;
+    const size = visSize(lvl.size, state);
+    const p: Projectile = {
+      id: newId(state),
+      kind: "sentinel",
+      x: state.player.x + Math.cos(a) * radius,
+      y: state.player.y + Math.sin(a) * radius,
+      vx: 0,
+      vy: 0,
+      r: size * 0.7,
+      damage,
+      life: lvl.cooldown * 1.15, // slight overlap for smooth visual
+      pierce: 999, // re-hit through cycle; fresh hitSet each cycle anyway
+      hitTimer: 0,
+      hitSet: new Set(),
+      knockback: 80,
+      size,
+      color: "#9aff8c",
+      target: null,
+      explodeRadius: 0,
+      explodeDamage: 0,
+      angle: a,
+      spin: lvl.spin,
+      hostile: false,
+      alive: true,
+      orbitR: radius,
+    };
+    state.projectiles.push(p);
+  }
+};
+
+const fireCrypto = (state: GameState, w: Weapon): void => {
+  const lvl = CRYPTO_LEVELS[w.level - 1];
+  const baseDmg = lvl.damage * state.player.stats.damageMul;
+  const range = lvl.range * (0.85 + state.player.stats.areaMul * 0.15);
+  const hit: Set<number> = new Set();
+  let lastX = state.player.x;
+  let lastY = state.player.y;
+  let chained = 0;
+  for (let i = 0; i < lvl.chains; i++) {
+    let best: Enemy | null = null;
+    let bestD = (i === 0 ? 700 : range) ** 2;
+    for (const e of state.enemies) {
+      if (!e.alive) continue;
+      if (hit.has(e.id)) continue;
+      const dx = e.x - lastX;
+      const dy = e.y - lastY;
+      const d = dx * dx + dy * dy;
+      if (d < bestD) {
+        bestD = d;
+        best = e;
+      }
+    }
+    if (!best) break;
+    // Final chain link does double damage at level 5
+    const isLast = i === lvl.chains - 1;
+    const dmg = w.level >= 5 && isLast ? baseDmg * 2 : baseDmg;
+    // Visual chain particle (line)
+    spawnChainSpark(state, lastX, lastY, best.x, best.y);
+    damageEnemy(
+      state,
+      best,
+      dmg,
+      best.x - lastX,
+      best.y - lastY,
+      40,
+    );
+    hit.add(best.id);
+    lastX = best.x;
+    lastY = best.y;
+    chained++;
+  }
+  if (chained > 0) state.camera.shake = Math.max(state.camera.shake, 2.5);
+};
+
+const spawnChainSpark = (
+  state: GameState,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): void => {
+  // Use particle "text" trick; we'll add a 'chain' particle but simpler: drop
+  // several 'spark' particles along the line so the renderer doesn't need a
+  // new kind. Cheap, effective.
+  const steps = 8;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const x = x1 + (x2 - x1) * t;
+    const y = y1 + (y2 - y1) * t;
+    state.particles.push({
+      kind: "spark",
+      x: x + (Math.random() - 0.5) * 8,
+      y: y + (Math.random() - 0.5) * 8,
+      vx: (Math.random() - 0.5) * 30,
+      vy: (Math.random() - 0.5) * 30,
+      life: 0.18,
+      maxLife: 0.18,
+      size: 2.5,
+      color: "#7ed7ff",
+      alive: true,
+    });
+  }
+};
+
+// ----- Evolutions -----
+
+const fireHyperthread = (state: GameState, _w: Weapon): void => {
+  const damage = HYPERTHREAD.damage * state.player.stats.damageMul;
+  const pierce = HYPERTHREAD.pierce + state.player.stats.pierceBonus;
+  const count = HYPERTHREAD.count + state.player.stats.threadExtra;
+  const target = findClosestEnemy(state, state.player.x, state.player.y, 1200);
+  const baseAngle = target
+    ? Math.atan2(target.y - state.player.y, target.x - state.player.x)
+    : state.player.facing;
+  for (let i = 0; i < count; i++) {
+    // Spread fully around target if many shots — feels like a fan
+    const a = baseAngle + (i / count) * TAU;
+    const speed = visSpeed(HYPERTHREAD.speed, state);
+    const size = visSize(HYPERTHREAD.size, state);
+    state.projectiles.push({
+      id: newId(state),
+      kind: "thread",
+      x: state.player.x + Math.cos(a) * (state.player.r + 4),
+      y: state.player.y + Math.sin(a) * (state.player.r + 4),
+      vx: Math.cos(a) * speed,
+      vy: Math.sin(a) * speed,
+      r: size * 0.75,
+      damage,
+      life: visLife(HYPERTHREAD.life, state),
+      pierce,
+      hitTimer: 0,
+      hitSet: new Set(),
+      knockback: 100,
+      size,
+      color: "#9bf6ff",
+      target: null,
+      explodeRadius: 0,
+      explodeDamage: 0,
+      angle: a,
+      spin: 0,
+      hostile: false,
+      alive: true,
+    });
+  }
+};
+
+const firePerimeter = (state: GameState, _w: Weapon): void => {
+  const r = PERIMETER.radius * state.player.stats.areaMul;
+  const damage = PERIMETER.damage * state.player.stats.damageMul;
+  for (const e of state.enemies) {
+    if (!e.alive) continue;
+    const dx = e.x - state.player.x;
+    const dy = e.y - state.player.y;
+    if (dx * dx + dy * dy < r * r) {
+      damageEnemy(state, e, damage, dx, dy, 50);
+    }
+  }
+  // Two-ring visual
+  state.particles.push({
+    kind: "ring",
+    x: state.player.x,
+    y: state.player.y,
+    vx: 0,
+    vy: 0,
+    life: 0.45,
+    maxLife: 0.45,
+    size: r,
+    color: "rgba(255, 172, 77, 0.55)",
+    alive: true,
+  });
+  state.particles.push({
+    kind: "ring",
+    x: state.player.x,
+    y: state.player.y,
+    vx: 0,
+    vy: 0,
+    life: 0.32,
+    maxLife: 0.32,
+    size: r * 0.65,
+    color: "rgba(255, 220, 130, 0.55)",
+    alive: true,
+  });
+};
+
+const fireHeuristic = (state: GameState, _w: Weapon): void => {
+  const damage = HEURISTIC.damage * state.player.stats.damageMul;
+  const count = HEURISTIC.count;
+  const rng = { state: state.rngState };
+  for (let i = 0; i < count; i++) {
+    const a = rngRange(rng, 0, TAU);
+    const speed = visSpeed(HEURISTIC.speed, state);
+    const size = visSize(HEURISTIC.size, state);
+    state.projectiles.push({
+      id: newId(state),
+      kind: "antivirus",
+      x: state.player.x,
+      y: state.player.y,
+      vx: Math.cos(a) * speed * 0.4,
+      vy: Math.sin(a) * speed * 0.4,
+      r: size * 0.6,
+      damage,
+      life: visLife(HEURISTIC.life, state),
+      pierce: HEURISTIC.pierce + state.player.stats.pierceBonus,
+      hitTimer: 0,
+      hitSet: new Set(),
+      knockback: 80,
+      size,
+      color: "#a8ffe6",
+      target: null,
+      explodeRadius: 0,
+      explodeDamage: 0,
+      angle: a,
+      spin: 6,
+      hostile: false,
+      alive: true,
+    });
+  }
+  state.rngState = rng.state;
+};
+
 // ----- Tick -----
 
 export const updateWeapons = (state: GameState, dt: number): void => {
@@ -379,7 +651,6 @@ export const updateWeapons = (state: GameState, dt: number): void => {
     const cd = baseCooldown(w) / state.player.stats.attackSpeedMul;
     w.cooldown -= dt;
     if (w.cooldown <= 0) {
-      // Fire!
       switch (w.id) {
         case "thread":
           fireThread(state, w);
@@ -399,9 +670,23 @@ export const updateWeapons = (state: GameState, dt: number): void => {
         case "debugger":
           fireDebugger(state, w);
           break;
+        case "sentinel":
+          fireSentinel(state, w);
+          break;
+        case "crypto":
+          fireCrypto(state, w);
+          break;
+        case "hyperthread":
+          fireHyperthread(state, w);
+          break;
+        case "perimeter":
+          firePerimeter(state, w);
+          break;
+        case "heuristic":
+          fireHeuristic(state, w);
+          break;
       }
       w.cooldown += cd;
-      // Avoid runaway negative cooldown if dt was huge
       if (w.cooldown < 0) w.cooldown = cd * 0.1;
     }
   }
@@ -421,6 +706,16 @@ const baseCooldown = (w: Weapon): number => {
       return LASER_LEVELS[w.level - 1].cooldown;
     case "debugger":
       return DEBUGGER_LEVELS[w.level - 1].cooldown;
+    case "sentinel":
+      return SENTINEL_LEVELS[w.level - 1].cooldown;
+    case "crypto":
+      return CRYPTO_LEVELS[w.level - 1].cooldown;
+    case "hyperthread":
+      return HYPERTHREAD.cooldown;
+    case "perimeter":
+      return PERIMETER.cooldown;
+    case "heuristic":
+      return HEURISTIC.cooldown;
   }
 };
 

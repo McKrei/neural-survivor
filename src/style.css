@@ -249,6 +249,20 @@ body {
   color: var(--warn);
 }
 
+.slot.locked {
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.01);
+  color: rgba(255, 255, 255, 0.25);
+}
+
+.slot.locked .lock-hint {
+  font-size: 22px;
+  font-weight: 300;
+  line-height: 1;
+  color: rgba(108, 220, 255, 0.45);
+}
+
 /* ----- Centered overlays ----- */
 .overlay {
   position: absolute;

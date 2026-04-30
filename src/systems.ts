@@ -109,10 +109,17 @@ export const updateProjectiles = (state: GameState, dt: number): void => {
       // Slow ballistic — decelerate
       p.vx *= Math.pow(0.05, dt);
       p.vy *= Math.pow(0.05, dt);
+    } else if (p.kind === "sentinel") {
+      // Lock to a circular orbit around the player; angle already advanced by spin.
+      const r = p.orbitR ?? 80;
+      p.x = state.player.x + Math.cos(p.angle) * r;
+      p.y = state.player.y + Math.sin(p.angle) * r;
     }
 
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
+    if (p.kind !== "sentinel") {
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+    }
 
     // Hostile projectiles: collide with player
     if (p.hostile) {
@@ -257,50 +264,46 @@ export const updatePlayerCollisions = (state: GameState): void => {
 
 // ----- Orbs (XP pickups) -----
 
+// Age (seconds) after which orbs auto-magnetize regardless of distance, so
+// the player never has to chase scattered XP after a tough wave.
+const ORB_AUTOMAGNET_AGE = 4.0;
+
 export const updateOrbs = (state: GameState, dt: number): void => {
   const p = state.player;
   const pickup = p.stats.pickupRadius;
+  const pickup2 = pickup * pickup;
   for (const o of state.orbs) {
     if (!o.alive) continue;
     const dx = p.x - o.x;
     const dy = p.y - o.y;
     const d2 = dx * dx + dy * dy;
-    // Magnetize within pickup radius
-    if (d2 < pickup * pickup) {
-      o.attractTimer = 1;
-    }
-    if (o.attractTimer > 0) {
+    o.bob += dt * 4;
+    // attractTimer doubles as orb age (seconds).
+    o.attractTimer += dt;
+    const attracted = d2 < pickup2 || o.attractTimer > ORB_AUTOMAGNET_AGE;
+    if (attracted) {
       const d = Math.sqrt(d2) || 1;
-      const speed = 380 + (1 - d / pickup) * 220;
+      const speed = 480 + (1 - Math.min(1, d / Math.max(pickup, 1))) * 320;
       o.vx += (dx / d) * speed * dt;
       o.vy += (dy / d) * speed * dt;
-      // Drag
-      o.vx *= Math.pow(0.001, dt);
-      o.vy *= Math.pow(0.001, dt);
+      o.vx *= Math.pow(0.0008, dt);
+      o.vy *= Math.pow(0.0008, dt);
     } else {
-      // Friction
       o.vx *= Math.pow(0.05, dt);
       o.vy *= Math.pow(0.05, dt);
     }
     o.x += o.vx * dt;
     o.y += o.vy * dt;
-    o.bob += dt * 4;
 
     // Pickup on direct contact
-    const rsum = o.r + p.r;
+    const rsum = o.r + p.r + 6;
     if (d2 < rsum * rsum) {
       o.alive = false;
       const gained = Math.max(1, Math.floor(o.value * p.stats.xpGainMul));
       gainXp(state, gained);
     }
-
-    // Lifetime cap (in case orbs are far in the wild)
-    o.attractTimer = Math.max(0, o.attractTimer - dt * 0.0); // never decays now
-    // soft expiry
-    if (state.time - o.bob / 4 > ORB_LIFETIME) {
-      // unused; orbs persist for full run
-    }
   }
+  void ORB_LIFETIME;
 };
 
 const gainXp = (state: GameState, amount: number): void => {
@@ -389,6 +392,22 @@ export const compactAll = (state: GameState): void => {
   compact(state.particles);
 };
 
+// Smoothed kill rate / dps for adaptive difficulty.
+const updateAdaptiveMetrics = (state: GameState, dt: number): void => {
+  const newKills = state.player.killCount - state.prevKillCount;
+  const newDamage = state.totalDamage - state.prevTotalDamage;
+  state.prevKillCount = state.player.killCount;
+  state.prevTotalDamage = state.totalDamage;
+  // Exponential smoothing with ~6 second half-life so the game reacts to
+  // sustained pressure but ignores tiny bursts.
+  const tau = 6;
+  const alpha = 1 - Math.exp(-dt / tau);
+  if (dt > 0) {
+    state.killRate = state.killRate * (1 - alpha) + (newKills / dt) * alpha;
+    state.dpsRate = state.dpsRate * (1 - alpha) + (newDamage / dt) * alpha;
+  }
+};
+
 // ----- Master tick (one fixed step) -----
 
 export const stepGame = (state: GameState, dt: number): void => {
@@ -397,6 +416,7 @@ export const stepGame = (state: GameState, dt: number): void => {
   state.time += dt;
   state.frame++;
 
+  updateAdaptiveMetrics(state, dt);
   updatePlayerMovement(state, dt);
   updateSpawning(state, dt);
   updateEnemies(state, dt);

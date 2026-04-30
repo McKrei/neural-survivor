@@ -85,6 +85,11 @@ export const createGameState = (): GameState => {
     fps: 0,
     fpsFrames: 0,
     fpsAccum: 0,
+
+    killRate: 0,
+    dpsRate: 0,
+    prevKillCount: 0,
+    prevTotalDamage: 0,
   };
 };
 
@@ -118,6 +123,11 @@ export const resetGameState = (state: GameState): void => {
   state.fps = 0;
   state.fpsFrames = 0;
   state.fpsAccum = 0;
+
+  state.killRate = 0;
+  state.dpsRate = 0;
+  state.prevKillCount = 0;
+  state.prevTotalDamage = 0;
 
   // Give the player a starting weapon.
   state.weapons.set("thread", { id: "thread", level: 1, cooldown: 0.4 });

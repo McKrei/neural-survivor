@@ -169,25 +169,25 @@ const buildWeaponStrip = (state: GameState): void => {
   if (sig === lastSlotState.weaponSig) return;
   lastSlotState.weaponSig = sig;
   ui.weaponStrip.innerHTML = "";
-  // Show 6 slots
-  const order: string[] = [
-    "thread",
-    "firewall",
-    "antivirus",
-    "gc",
-    "laser",
-    "debugger",
-  ];
-  for (const id of order) {
-    const w = state.weapons.get(id as never);
-    const slot = el("div", `slot ${w ? "filled" : ""}`);
-    if (w) {
-      const meta = WEAPON_ICONS[id];
-      slot.innerHTML = svgIcon(meta.path, meta.color, 22);
-      const lvl = el("span", "lvl");
-      lvl.textContent = `${w.level}`;
-      slot.appendChild(lvl);
-    }
+  // Render currently equipped weapons (in stable order), then locked slots
+  // up to 6 with a hint icon so the player knows there's room to grow.
+  const equipped = Array.from(state.weapons.values());
+  const SLOT_TOTAL = 6;
+  for (const w of equipped) {
+    const slot = el("div", "slot filled");
+    const meta = WEAPON_ICONS[w.id] ?? { path: "M 12 12 m -8 0 a 8 8 0 1 0 16 0", color: "#fff" };
+    slot.innerHTML = svgIcon(meta.path, meta.color, 22);
+    const lvl = el("span", "lvl");
+    lvl.textContent = `${w.level}`;
+    slot.appendChild(lvl);
+    slot.title = `Оружие: уровень ${w.level}`;
+    ui.weaponStrip.appendChild(slot);
+  }
+  const locked = Math.max(0, SLOT_TOTAL - equipped.length);
+  for (let i = 0; i < locked; i++) {
+    const slot = el("div", "slot locked");
+    slot.innerHTML = `<span class="lock-hint">+</span>`;
+    slot.title = "Свободный слот — получите новое оружие на следующем уровне";
     ui.weaponStrip.appendChild(slot);
   }
 };
@@ -236,6 +236,23 @@ const WEAPON_ICONS: Record<string, { path: string; color: string }> = {
   },
   laser: { path: "M 3 12 H 21 M 18 9 L 21 12 L 18 15", color: "#ff5577" },
   debugger: { path: "M 6 4 L 18 12 L 6 20 Z M 12 8 V 16", color: "#c79cff" },
+  sentinel: {
+    path: "M 12 12 m -8 0 a 8 8 0 1 0 16 0 a 8 8 0 1 0 -16 0 M 12 4 a 1.5 1.5 0 1 0 0 3 a 1.5 1.5 0 1 0 0 -3 M 20 12 a 1.5 1.5 0 1 0 0 3 a 1.5 1.5 0 1 0 0 -3",
+    color: "#9aff8c",
+  },
+  crypto: { path: "M 13 2 L 5 14 H 11 L 9 22 L 19 10 H 13 Z", color: "#7ed7ff" },
+  hyperthread: {
+    path: "M 4 6 H 20 M 4 12 H 20 M 4 18 H 20 M 8 4 V 20 M 12 4 V 20 M 16 4 V 20",
+    color: "#9bf6ff",
+  },
+  perimeter: {
+    path: "M 12 2 L 22 6 V 12 C 22 18 17 22 12 22 C 7 22 2 18 2 12 V 6 Z M 12 7 L 18 9 V 12 C 18 15 15 17 12 18 C 9 17 6 15 6 12 V 9 Z",
+    color: "#ffac4d",
+  },
+  heuristic: {
+    path: "M 12 2 L 14 8 L 22 9 L 16 13 L 18 22 L 12 17 L 6 22 L 8 13 L 2 9 L 10 8 Z",
+    color: "#a8ffe6",
+  },
 };
 
 const PASSIVE_ICONS: Record<string, { path: string; color: string }> = {

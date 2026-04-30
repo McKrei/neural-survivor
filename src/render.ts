@@ -555,10 +555,50 @@ const drawProjectile = (ctx: CanvasRenderingContext2D, p: Projectile): void => {
     case "gc":
       drawGc(ctx, p);
       break;
+    case "sentinel":
+      drawSentinel(ctx, p);
+      break;
+    case "chain":
+      // chain segments are drawn via spark particles
+      break;
     case "trojan_shot":
-      // already handled above (hostile)
       break;
   }
+};
+
+const drawSentinel = (ctx: CanvasRenderingContext2D, p: Projectile): void => {
+  const s = p.size;
+  // Outer halo
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, s * 1.4, 0, TAU);
+  ctx.fillStyle = "rgba(154, 255, 140, 0.18)";
+  ctx.fill();
+
+  // Body — hexagonal drone
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(p.angle * 2);
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * TAU;
+    const x = Math.cos(a) * s * 0.85;
+    const y = Math.sin(a) * s * 0.85;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = p.color;
+  ctx.fill();
+  ctx.lineWidth = 1.4;
+  ctx.strokeStyle = "#eaffe6";
+  ctx.stroke();
+
+  // Inner core
+  ctx.beginPath();
+  ctx.arc(0, 0, s * 0.32, 0, TAU);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.restore();
 };
 
 const drawThread = (ctx: CanvasRenderingContext2D, p: Projectile): void => {

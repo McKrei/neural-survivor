@@ -1,6 +1,7 @@
 // Upgrade definitions: weapons and passive modules.
 // Each upgrade has up to 5 levels, with a localized Russian description.
 
+import { softCap, STAT_CAPS } from "./balance";
 import type {
   GameState,
   PlayerStats,
@@ -32,6 +33,55 @@ export const WEAPON_IDS: WeaponId[] = [
   "gc",
   "laser",
   "debugger",
+  "sentinel",
+  "crypto",
+];
+
+// Evolutions: base weapon at MAX_LEVEL + required passive at MAX_LEVEL → unlock.
+// Each evolution replaces its base weapon when picked.
+export interface EvolutionDef {
+  id: WeaponId;
+  base: WeaponId;
+  passive: PassiveId;
+  name: string;
+  description: string;
+  iconPath: string;
+  iconColor: string;
+}
+
+export const EVOLUTIONS: EvolutionDef[] = [
+  {
+    id: "hyperthread",
+    base: "thread",
+    passive: "gpu",
+    name: "Гиперпоток",
+    description:
+      "Эволюция: непрерывный поток снарядов во все стороны. Прошивает строй насквозь.",
+    iconPath: "M 4 6 H 20 M 4 12 H 20 M 4 18 H 20 M 8 4 V 20 M 12 4 V 20 M 16 4 V 20",
+    iconColor: "#9bf6ff",
+  },
+  {
+    id: "perimeter",
+    base: "firewall",
+    passive: "area",
+    name: "Защитный периметр",
+    description:
+      "Эволюция: огромный многослойный фаервол, выжигающий всё вокруг. Поджигает врагов.",
+    iconPath:
+      "M 12 2 L 22 6 V 12 C 22 18 17 22 12 22 C 7 22 2 18 2 12 V 6 Z M 12 7 L 18 9 V 12 C 18 15 15 17 12 18 C 9 17 6 15 6 12 V 9 Z",
+    iconColor: "#ffac4d",
+  },
+  {
+    id: "heuristic",
+    base: "antivirus",
+    passive: "augment",
+    name: "Эвристический сканер",
+    description:
+      "Эволюция: рой самонаводящихся зондов с гарантированным критом по угрозе.",
+    iconPath:
+      "M 12 2 L 14 8 L 22 9 L 16 13 L 18 22 L 12 17 L 6 22 L 8 13 L 2 9 L 10 8 Z",
+    iconColor: "#a8ffe6",
+  },
 ];
 
 export const PASSIVE_IDS: PassiveId[] = [
@@ -64,8 +114,8 @@ interface UpgradeMeta {
   baseRarity: Rarity;
 }
 
-// Weapons
-const WEAPON_META: Record<WeaponId, UpgradeMeta> = {
+// Weapons (base weapons only; evolutions live in EVOLUTIONS).
+const WEAPON_META: Partial<Record<WeaponId, UpgradeMeta>> = {
   thread: {
     id: "thread",
     name: "Многопоточность",
@@ -153,6 +203,35 @@ const WEAPON_META: Record<WeaponId, UpgradeMeta> = {
     iconPath:
       "M 6 4 L 18 12 L 6 20 Z M 12 8 V 16",
     iconColor: "#c79cff",
+    baseRarity: "epic",
+  },
+  sentinel: {
+    id: "sentinel",
+    name: "Сторожевой процесс",
+    descriptions: [
+      "Орбитальные дроны вокруг ИИ. Тараном уничтожают врагов в касании.",
+      "+1 дрон. Урон +20%.",
+      "Радиус орбиты +20%. Урон +25%.",
+      "+1 дрон. Скорость вращения +25%.",
+      "+1 дрон. Размер +40%. Урон +40%.",
+    ],
+    iconPath:
+      "M 12 12 m -8 0 a 8 8 0 1 0 16 0 a 8 8 0 1 0 -16 0 M 12 4 a 1.5 1.5 0 1 0 0 3 a 1.5 1.5 0 1 0 0 -3 M 20 12 a 1.5 1.5 0 1 0 0 3 a 1.5 1.5 0 1 0 0 -3",
+    iconColor: "#9aff8c",
+    baseRarity: "rare",
+  },
+  crypto: {
+    id: "crypto",
+    name: "Криптограф",
+    descriptions: [
+      "Цепная молния по ближайшим угрозам. Хешируем 3 цели подряд.",
+      "+1 цель в цепи. Урон +20%.",
+      "Скорость стрельбы +30%.",
+      "+1 цель. Урон +30%.",
+      "+2 цели. Урон финального звена ×2.",
+    ],
+    iconPath: "M 13 2 L 5 14 H 11 L 9 22 L 19 10 H 13 Z",
+    iconColor: "#7ed7ff",
     baseRarity: "epic",
   },
 };
@@ -364,6 +443,7 @@ export const buildOptionPool = (state: GameState): UpgradeOption[] => {
     if (lvl >= MAX_LEVEL) continue;
     if (!cur && weaponCount >= weaponLimit) continue;
     const meta = WEAPON_META[id];
+    if (!meta) continue;
     out.push({
       id,
       kind: "weapon",
@@ -374,6 +454,27 @@ export const buildOptionPool = (state: GameState): UpgradeOption[] => {
       rarity: meta.baseRarity,
       iconPath: meta.iconPath,
       iconColor: meta.iconColor,
+    });
+  }
+
+  // Evolutions: base weapon at MAX + required passive at MAX → unlock as a
+  // single-level epic option that replaces the base weapon.
+  for (const ev of EVOLUTIONS) {
+    const baseW = state.weapons.get(ev.base);
+    const passLvl = state.passiveLevels.get(ev.passive) ?? 0;
+    if (!baseW || baseW.level < MAX_LEVEL) continue;
+    if (passLvl < MAX_LEVEL) continue;
+    if (state.weapons.has(ev.id)) continue; // already evolved
+    out.push({
+      id: ev.id,
+      kind: "weapon",
+      name: ev.name,
+      desc: ev.description,
+      level: 0,
+      maxLevel: 1,
+      rarity: "epic",
+      iconPath: ev.iconPath,
+      iconColor: ev.iconColor,
     });
   }
 
@@ -406,13 +507,14 @@ export const pickChoices = (state: GameState, count = 3): UpgradeOption[] => {
   if (pool.length === 0) return [];
 
   // Weights: incomplete weapons have higher weight if no weapons yet, etc.
+  const evoIds = new Set(EVOLUTIONS.map((e) => e.id));
   const weights = pool.map((o) => {
     let w = 1;
     if (o.rarity === "rare") w = 0.55;
     if (o.rarity === "epic") w = 0.28;
-    // Boost: prefer leveling up existing weapons over adding new ones early
     if (o.kind === "weapon" && o.level > 0) w *= 1.2;
-    // Apply player luck for rare/epic
+    // Evolutions: massive priority so the player rarely misses them.
+    if (evoIds.has(o.id as WeaponId)) w *= 12;
     if (o.rarity !== "common") w *= 1 + state.player.stats.luck;
     return w;
   });
@@ -458,7 +560,21 @@ export const applyUpgrade = (
   option: UpgradeOption,
 ): void => {
   if (option.kind === "weapon") {
-    ensureWeapon(state, option.id as WeaponId);
+    const wid = option.id as WeaponId;
+    // Evolution: replace base weapon with evolved final form.
+    const evo = EVOLUTIONS.find((e) => e.id === wid);
+    if (evo) {
+      state.weapons.delete(evo.base);
+      state.weapons.set(evo.id, { id: evo.id, level: 1, cooldown: 0.2 });
+      state.toasts.push({
+        id: ++state.nextId,
+        text: `Эволюция! ${evo.name}`,
+        t: 3,
+        tone: "info",
+      });
+      return;
+    }
+    ensureWeapon(state, wid);
     return;
   }
 
@@ -544,6 +660,35 @@ export const applyUpgrade = (
       break;
     }
   }
+  applySoftCaps(stats);
+};
+
+// Soft-cap multiplicative stats so they can't snowball past sane levels.
+const applySoftCaps = (stats: PlayerStats): void => {
+  const c = STAT_CAPS;
+  stats.damageMul = softCap(stats.damageMul, c.damageMul.soft, c.damageMul.hard);
+  stats.attackSpeedMul = softCap(
+    stats.attackSpeedMul,
+    c.attackSpeedMul.soft,
+    c.attackSpeedMul.hard,
+  );
+  stats.areaMul = softCap(stats.areaMul, c.areaMul.soft, c.areaMul.hard);
+  stats.durationMul = softCap(
+    stats.durationMul,
+    c.durationMul.soft,
+    c.durationMul.hard,
+  );
+  stats.projectileSpeedMul = softCap(
+    stats.projectileSpeedMul,
+    c.projectileSpeedMul.soft,
+    c.projectileSpeedMul.hard,
+  );
+  stats.projectileSizeMul = softCap(
+    stats.projectileSizeMul,
+    c.projectileSizeMul.soft,
+    c.projectileSizeMul.hard,
+  );
+  stats.critChance = Math.min(c.critChance.hard, stats.critChance);
 };
 
 // ----- Stats application helpers (used outside) -----

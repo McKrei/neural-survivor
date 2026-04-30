@@ -7,7 +7,7 @@ export const PLAYER_BASE = {
   maxHp: 120,
   hpRegen: 0.6,
   speed: 220, // px/s
-  pickupRadius: 110,
+  pickupRadius: 160,
   damageMul: 1,
   attackSpeedMul: 1,
   projectileSpeedMul: 1,
@@ -26,6 +26,27 @@ export const PLAYER_BASE = {
 export const PLAYER_RADIUS = 14;
 export const PLAYER_IFRAMES = 0.55;
 export const PLAYER_KNOCKBACK_RES = 0.85; // multiplier per frame on player knockback (unused, but in case)
+
+// Stat caps to prevent runaway "imba" builds. Multipliers are softly capped
+// using diminishing returns above the soft threshold; crit chance is hard
+// capped.
+export const STAT_CAPS = {
+  damageMul: { soft: 5, hard: 12 },
+  attackSpeedMul: { soft: 4, hard: 8 },
+  areaMul: { soft: 3, hard: 6 },
+  durationMul: { soft: 3, hard: 6 },
+  projectileSpeedMul: { soft: 3, hard: 5 },
+  projectileSizeMul: { soft: 2.5, hard: 4 },
+  critChance: { soft: 0.6, hard: 0.85 },
+};
+
+export const softCap = (v: number, soft: number, hard: number): number => {
+  if (v <= soft) return v;
+  // Logarithmic falloff between soft and hard
+  const over = v - soft;
+  const range = hard - soft;
+  return soft + range * (1 - Math.exp(-over / range));
+};
 
 // ----- XP curve -----
 // Geometric-ish curve: tier-based scaling like Vampire Survivors.
@@ -121,23 +142,35 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
 };
 
 // Difficulty curve. Returns multiplier for HP/damage/speed scaling.
-// At t=0 → 1.0. At t=300s → ~3.5x HP, ~1.8x damage, ~1.4x speed.
-export const enemyHpMul = (t: number): number => 1 + t / 60 + (t * t) / 50000;
-export const enemyDamageMul = (t: number): number => 1 + t / 240;
+// 15-minute curve: gentle ramp to 5 min, steeper to 10 min, brutal to 15 min.
+export const enemyHpMul = (t: number): number =>
+  1 + t / 50 + (t * t) / 32000 + Math.max(0, (t - 600) * (t - 600) / 18000);
+export const enemyDamageMul = (t: number): number =>
+  1 + t / 200 + Math.max(0, (t - 480) / 360);
 export const enemySpeedMul = (t: number): number =>
-  Math.min(1.6, 1 + t / 480);
+  Math.min(1.85, 1 + t / 420);
 
 // Spawn rate (enemies per second) grows with time.
-// At t=0 → 0.6/s (gentle start), at 60s → ~2/s, at 180s → ~5/s, at 300s → ~8/s.
-// Capped to prevent total mayhem after 6+ minutes.
+// At t=0 → 0.6/s, at 60s → ~2/s, at 180s → ~5/s, at 300s → ~8/s, at 600s → ~14/s.
+// Hard cap raised because adaptive scaling on top can push it further.
 export const spawnRate = (t: number): number =>
-  Math.min(15, 0.6 + t / 45 + (t * t) / 14000);
+  Math.min(18, 0.6 + t / 45 + (t * t) / 12000);
+
+// Adaptive spawn multiplier based on player kill rate (kills/sec).
+// Faster the player kills, faster the spawns ramp — anti-cheese.
+export const adaptiveSpawnBoost = (killRate: number): number =>
+  Math.min(2.6, 1 + killRate / 4.5);
+
+// HP boost on spawn, scaled by player damage-per-second. Keeps enemies
+// relevant against stacked builds. Returns multiplier in [1, 3.2].
+export const adaptiveHpBoost = (dps: number): number =>
+  Math.min(3.2, 1 + Math.log10(1 + dps / 80) * 1.4);
 
 // Game duration (victory threshold).
-export const VICTORY_TIME = 600; // 10 minutes
+export const VICTORY_TIME = 900; // 15 minutes
 
 // Cap concurrent enemies for safety.
-export const MAX_ENEMIES = 800;
+export const MAX_ENEMIES = 1100;
 
 // Enemy kind weights at given time (controls composition over time).
 export const enemyWeights = (
